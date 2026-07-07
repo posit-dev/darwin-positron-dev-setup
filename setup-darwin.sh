@@ -200,6 +200,17 @@ ask_default() {
   printf -v "$__var" '%s' "$reply"
 }
 
+# clip_copy <text>: copy <text> to the macOS clipboard via pbcopy (which ships
+# with macOS). Returns non-zero if pbcopy is somehow unavailable so callers can
+# fall back gracefully.
+clip_copy() {
+  if have pbcopy; then
+    printf '%s' "$1" | pbcopy
+  else
+    return 1
+  fi
+}
+
 # add_shell_init <tag> <line>...: append a marker-delimited block of shell-init
 # lines to $SHELL_RC so a tool (fnm, pyenv, ...) loads in future interactive
 # shells. Idempotent by <tag>, and recorded for --undo, which removes the block
@@ -474,6 +485,66 @@ install_python() {
     "eval \"\$(pyenv init - $LOGIN_SHELL)\""
 }
 
+# configure_ssh_key: ensure an ed25519 SSH key pair exists. Idempotent — if
+# ~/.ssh/id_ed25519 is already there, leaves it alone. Otherwise generates one
+# non-interactively (no passphrase), labelled with the git email if set. Then
+# shows the public key, copies it to the clipboard, and points the developer at
+# GitHub to register it.
+configure_ssh_key() {
+  local key="$HOME/.ssh/id_ed25519" comment pub
+
+  banner "Setup SSH Keys"
+  if [ -f "$key" ]; then
+    log "SSH key already exists ($key); skipping generation."
+  else
+    log "generating an ed25519 SSH key ($key)..."
+    mkdir -p "$HOME/.ssh"
+    chmod 700 "$HOME/.ssh"
+    comment="$(git config --global user.email || true)"
+    ssh-keygen -t ed25519 -f "$key" -N "" -C "$comment"
+    log "SSH key created."
+  fi
+
+  pub="$(cat "${key}.pub")"
+  printf '\n' >&2
+  printf 'Your public SSH key (%s.pub):\n\n' "$key" >&2
+  printf '%s\n\n' "$pub" >&2
+  if clip_copy "$pub"; then
+    printf 'It has been copied to your clipboard.\n' >&2
+  fi
+  printf '%sAdd it to GitHub here: %s%shttps://github.com/settings/ssh/new%s\n\n' "$ACCENT" "$RESET" "$CYAN" "$RESET" >&2
+  while ! confirm "Have you added your SSH key to GitHub?"; do
+    printf '%sWell, do it! Add your SSH key to GitHub, then confirm.%s\n' "$ACCENT" "$RESET" >&2
+  done
+}
+
+# configure_git_identity: ensure git knows who's authoring commits. Always walks
+# the developer through both fields, pre-filling any value that's already set so
+# ENTER keeps it. This is the one place we ask the developer for personal info.
+configure_git_identity() {
+  local cur_name cur_email name email
+  cur_name="$(git config --global user.name || true)"
+  cur_email="$(git config --global user.email || true)"
+
+  banner "Setup Git Identity"
+  log "setting your git identity (used to author your commits)..."
+
+  # Prompt for both, showing any existing value as the default. Only set (and
+  # record for undo) fields that actually change, so we never unset or clobber an
+  # identity the developer already had, and re-running is a no-op.
+  ask_default "Your Git user.name" name "$cur_name"
+  if [ "$name" != "$cur_name" ]; then
+    git config --global user.name "$name"
+    [ -z "$cur_name" ] && record "git-name"
+  fi
+  ask_default "Your Git user.email" email "$cur_email"
+  if [ "$email" != "$cur_email" ]; then
+    git config --global user.email "$email"
+    [ -z "$cur_email" ] && record "git-email"
+  fi
+  log "git identity set to $name <$email>."
+}
+
 # --- main -------------------------------------------------------------------
 
 main() {
@@ -488,6 +559,9 @@ main() {
   install_deps
   install_node
   install_python
+  # Identity before the SSH key, so the key is labelled with the git email.
+  configure_git_identity
+  configure_ssh_key
 }
 
 main "$@"
