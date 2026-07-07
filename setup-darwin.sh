@@ -565,6 +565,270 @@ configure_git_identity() {
   log "git identity set to $name <$email>."
 }
 
+# install_vscode: optionally install the latest stable Visual Studio Code via
+# Homebrew cask. Idempotent — skips if the cask is already installed. Recorded
+# for --undo only when we newly install it.
+install_vscode() {
+  banner "Install Visual Studio Code"
+
+  if ! confirm "Install Visual Studio Code?"; then
+    log "skipping Visual Studio Code install."
+    return 0
+  fi
+
+  if cask_installed visual-studio-code; then
+    log "Visual Studio Code already installed; skipping."
+    return 0
+  fi
+
+  log "installing Visual Studio Code (cask) ..."
+  brew install --cask visual-studio-code
+  record "cask visual-studio-code"
+  log "Visual Studio Code installed."
+}
+
+# positron_parent_dir: prompt for a folder under ~/ (e.g. "Work" or "Code"),
+# create it if missing (recorded for --undo), and echo it. Shared by the clone
+# and fork paths, which put each repo checkout directly inside it.
+positron_parent_dir() {
+  local folder parent
+  ask "Which folder under ~/ should the repos go in? (e.g. Work, Code)" folder
+  parent="$HOME/$folder"
+  if [ ! -d "$parent" ]; then
+    log "creating $parent ..."
+    mkdir -p "$parent"
+    record "mkdir $parent"
+  fi
+  printf '%s\n' "$parent"
+}
+
+# clone_repo <url> <dest>: clone <url> into <dest> over SSH, unless a checkout is
+# already there. Idempotent and recorded for --undo.
+clone_repo() {
+  local url="$1" dest="$2"
+  if [ -d "$dest/.git" ]; then
+    log "already cloned at $dest; skipping."
+    return 0
+  fi
+  if [ -e "$dest" ]; then
+    log "WARNING: $dest exists but isn't a git checkout; skipping."
+    return 0
+  fi
+  log "cloning $url into $dest ..."
+  git clone "$url" "$dest"
+  record "clone $dest"
+}
+
+# clone_or_fork_positron: the final interactive step. Positron core developers
+# clone the repos directly; community contributors fork first. Hands off to the
+# matching function below.
+clone_or_fork_positron() {
+  banner "Clone or Fork Positron"
+  log "Positron core developers can clone the repos directly; the community should fork."
+  if confirm "Are you a Positron core developer? (No forks Positron to your account instead)"; then
+    clone_positron
+  else
+    fork_positron
+  fi
+}
+
+# clone_positron: for Positron core developers. Offers (one Y/n per repo) to clone
+# each of the repos core developers work on ($CORE_REPOS) into a chosen folder
+# under ~/. Repo URLs share POSITRON_URL's host/owner, so SETUP_POSITRON_URL
+# overrides them all. Runs after configure_ssh_key so the SSH clones authenticate.
+clone_positron() {
+  banner "Clone Positron repos"
+
+  local parent base name
+  parent="$(positron_parent_dir)"
+  base="${POSITRON_URL%/*}"   # e.g. git@github.com:posit-dev
+
+  for name in "${CORE_REPOS[@]}"; do
+    if confirm "Clone $name?"; then
+      clone_repo "$base/$name.git" "$parent/$name"
+    else
+      log "skipping $name."
+    fi
+  done
+  log "done. Your Positron repos are under $parent."
+}
+
+# fork_positron: for community contributors without push access. Points the
+# developer at GitHub to create their own fork in the browser, then clones that
+# fork over SSH (as origin) and adds the canonical repo as an `upstream` remote so
+# they can pull updates. The fork on GitHub is left in place on --undo, like
+# generated SSH keys.
+fork_positron() {
+  banner "Fork Positron"
+
+  local slug repo user fork_page fork_url parent dest
+
+  # Derive owner/repo and the browser "create fork" URL from POSITRON_URL, e.g.
+  # git@github.com:posit-dev/positron.git -> posit-dev/positron.
+  slug="${POSITRON_URL#*:}"; slug="${slug%.git}"
+  repo="${slug##*/}"
+  fork_page="https://github.com/$slug/fork"
+
+  printf '\n' >&2
+  printf '%sFork Positron on GitHub first: %s%s%s%s\n\n' "$ACCENT" "$RESET" "$CYAN" "$fork_page" "$RESET" >&2
+  if clip_copy "$fork_page"; then
+    printf 'That URL has been copied to your clipboard.\n' >&2
+  fi
+  while ! confirm "Have you created your fork on GitHub?"; do
+    printf '%sGo create your fork at the URL above, then confirm.%s\n' "$ACCENT" "$RESET" >&2
+  done
+
+  ask "Your GitHub username (the owner of the fork)" user
+  fork_url="git@github.com:$user/$repo.git"
+
+  parent="$(positron_parent_dir)"
+  dest="$parent/$repo"
+  clone_repo "$fork_url" "$dest"
+
+  # Wire up the canonical repo as `upstream` so the developer can pull updates
+  # (idempotent; only when we have a checkout that doesn't already have it).
+  if [ -d "$dest/.git" ] && ! git -C "$dest" remote | grep -qx upstream; then
+    log "adding '$POSITRON_URL' as the 'upstream' remote ..."
+    git -C "$dest" remote add upstream "$POSITRON_URL"
+  fi
+  log "forked. Your checkout is at $dest (origin = your fork, upstream = $slug)."
+
+  # Point community contributors at where to go next.
+  printf '\n' >&2
+  printf '%sGetting started as a community contributor:%s\n' "$ACCENT" "$RESET" >&2
+  printf '  Positron:     %s%s%s\n' "$CYAN" "https://github.com/$slug" "$RESET" >&2
+  printf '  Contributing: %s%s%s\n\n' "$CYAN" "https://github.com/$slug/blob/main/CONTRIBUTING.md" "$RESET" >&2
+}
+
+# final_notice: the last thing main() does — a prominent boxed reminder that the
+# shell-init/PATH changes (Homebrew, fnm, pyenv) apply to new shells. macOS
+# already uses zsh as the login shell (no chsh), so there's no need to log out or
+# reboot: sourcing ~/.zshrc — or opening a new terminal — is enough.
+final_notice() {
+  boxed_notice \
+    "Setup complete!" \
+    "" \
+    "Load your new PATH and shell changes with:" \
+    "    source ~/.zshrc" \
+    "" \
+    "(or just open a new terminal window.)"
+}
+
+# undo: reverse everything recorded in the manifest, then delete it. Only touches
+# what this script created/installed; leaves pre-existing state untouched. Does
+# not revert Homebrew updates/upgrades, and — like the Command Line Tools and
+# generated SSH keys — leaves Homebrew itself in place.
+undo() {
+  banner "Undo macOS Positron Dev Setup"
+  if [ ! -f "$MANIFEST" ]; then
+    log "no manifest found ($MANIFEST); nothing to undo."
+    return 0
+  fi
+
+  # --undo is a fresh, non-interactive run that hasn't sourced ~/.zshrc, and on
+  # Apple silicon brew lives in /opt/homebrew, off the default PATH — so put it on
+  # PATH for the uninstall steps below. If brew isn't installed, the formula/cask
+  # removals simply no-op.
+  if ! have brew; then
+    if [ -x /opt/homebrew/bin/brew ]; then
+      eval "$(/opt/homebrew/bin/brew shellenv)"
+    elif [ -x /usr/local/bin/brew ]; then
+      eval "$(/usr/local/bin/brew shellenv)"
+    fi
+  fi
+
+  local line dir ver file name formulae=() casks=() dirs=()
+  while IFS= read -r line; do
+    case "$line" in
+      "formula "*) formulae+=("${line#formula }") ;;
+      "cask "*) casks+=("${line#cask }") ;;
+      "mkdir "*) dirs+=("${line#mkdir }") ;;
+      "omz")
+        log "removing oh-my-zsh ..."
+        rm -rf "$HOME/.oh-my-zsh"
+        if [ -f "$HOME/.zshrc.pre-oh-my-zsh" ]; then
+          log "restoring pre-oh-my-zsh ~/.zshrc ..."
+          mv -f "$HOME/.zshrc.pre-oh-my-zsh" "$HOME/.zshrc"
+        fi
+        ;;
+      "git-name")
+        log "unsetting git user.name ..."
+        git config --global --unset user.name || true
+        ;;
+      "git-email")
+        log "unsetting git user.email ..."
+        git config --global --unset user.email || true
+        ;;
+      "pyenv-version "*)
+        ver="${line#pyenv-version }"
+        log "uninstalling pyenv Python $ver ..."
+        PYENV_ROOT="$HOME/.pyenv" PATH="$HOME/.pyenv/bin:$PATH" \
+          pyenv uninstall -f "$ver" 2>/dev/null || true
+        ;;
+      "pyenv-root "*)
+        dir="${line#pyenv-root }"
+        log "removing pyenv ($dir) ..."
+        rm -rf "$dir"
+        ;;
+      "fnm-version "*)
+        ver="${line#fnm-version }"
+        log "uninstalling Node.js $ver ..."
+        FNM_DIR="$HOME/.fnm" PATH="$HOME/.fnm:$PATH" \
+          fnm uninstall "$ver" 2>/dev/null || true
+        ;;
+      "fnm-root "*)
+        dir="${line#fnm-root }"
+        log "removing fnm ($dir) ..."
+        rm -rf "$dir"
+        ;;
+      "shellinit "*)
+        file="${line#shellinit }"
+        log "removing our shell init from $file ..."
+        # BSD sed (macOS) requires an explicit backup suffix after -i; '' means
+        # edit in place with no backup.
+        sed -i '' '/# >>> darwin-positron-dev-setup: /,/# <<< darwin-positron-dev-setup: /d' "$file" 2>/dev/null || true
+        ;;
+      "clone "*)
+        dir="${line#clone }"
+        log "removing cloned repo $dir ..."
+        rm -rf "$dir"
+        ;;
+    esac
+  done <"$MANIFEST"
+
+  # Uninstall the formulae/casks we installed. Per item so one with a remaining
+  # dependent doesn't block the rest, and never under sudo. Homebrew stays; brew
+  # autoremove then drops any now-unused dependencies we pulled in.
+  if [ "${#formulae[@]}" -gt 0 ]; then
+    for name in "${formulae[@]}"; do
+      log "uninstalling formula $name ..."
+      brew uninstall --formula "$name" 2>/dev/null || true
+    done
+  fi
+  if [ "${#casks[@]}" -gt 0 ]; then
+    for name in "${casks[@]}"; do
+      log "uninstalling cask $name ..."
+      brew uninstall --cask "$name" 2>/dev/null || true
+    done
+  fi
+  if [ "${#formulae[@]}" -gt 0 ] || [ "${#casks[@]}" -gt 0 ]; then
+    log "removing now-unused Homebrew dependencies ..."
+    brew autoremove 2>/dev/null || true
+  fi
+
+  # Remove folders we created, last, so any checkouts inside them (removed above)
+  # are already gone. rmdir only deletes empty dirs, so a folder the developer
+  # later put other work in is left untouched.
+  for dir in "${dirs[@]:-}"; do
+    [ -n "$dir" ] || continue
+    rmdir "$dir" 2>/dev/null && log "removed $dir" || true
+  done
+
+  rm -f "$MANIFEST"
+  rmdir "$STATE_DIR" 2>/dev/null || true
+  log "undo complete."
+}
+
 # --- main -------------------------------------------------------------------
 
 main() {
@@ -583,6 +847,14 @@ main() {
   # Identity before the SSH key, so the key is labelled with the git email.
   configure_git_identity
   configure_ssh_key
+  install_vscode
+  clone_or_fork_positron
+  final_notice
 }
 
-main "$@"
+case "${1:-}" in
+  ""|--setup) main ;;
+  --undo) undo ;;
+  -h|--help) printf 'usage: %s [--undo]\n' "$0" ;;
+  *) printf 'unknown option: %s\nusage: %s [--undo]\n' "$1" "$0" >&2; exit 2 ;;
+esac
