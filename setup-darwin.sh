@@ -367,6 +367,22 @@ install_oh_my_zsh() {
   log "oh-my-zsh installed."
 }
 
+# configure_zsh_prompt: append a custom PROMPT as a shell-init block of ~/.zshrc.
+# Runs right after install_oh_my_zsh so the block lands after oh-my-zsh's own
+# config (which sets the theme's prompt), letting our PROMPT win. The later
+# tool-init blocks (fnm, pyenv) are appended below it but don't touch PROMPT, so
+# it stays the effective prompt. The prompt uses oh-my-zsh helpers ($fg,
+# git_prompt_info), so we only add it when oh-my-zsh is present; otherwise the
+# developer manages their own prompt. Idempotent and undo-aware via
+# add_shell_init.
+configure_zsh_prompt() {
+  [ -d "$HOME/.oh-my-zsh" ] || return 0
+  banner "Configure Zsh Prompt"
+  add_shell_init "zsh-prompt" \
+    'PROMPT='\''[%m]%{$fg_bold[green]%}%p %{$fg[cyan]%}[%~]%{$reset_color%} $(git_prompt_info)%{$fg_bold[blue]%}% %{$reset_color%}'\'''
+  log "custom zsh prompt written to $SHELL_RC."
+}
+
 # install_node: install fnm (Fast Node Manager) and the pinned Node.js
 # ($NODE_VERSION), then set it as the default. fnm is the current recommendation
 # for managing Node versions. Idempotent — skips the fnm install and the version
@@ -556,6 +572,7 @@ main() {
   # re-added inside install_oh_my_zsh afterward. fnm (install_node) wires itself
   # in later, so its block lands after the oh-my-zsh template and survives.
   install_oh_my_zsh
+  configure_zsh_prompt
   install_deps
   install_node
   install_python
