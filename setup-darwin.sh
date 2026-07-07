@@ -7,12 +7,6 @@
 #
 # Usage:
 #   ./setup-darwin.sh          run the setup steps
-#   ./setup-darwin.sh --undo   revert what a previous run installed/created
-#
-# --undo only reverses things THIS script actually did (tracked in a manifest);
-# it never touches pre-existing packages or checkouts, and it does not revert
-# Homebrew update/upgrade. Generated SSH keys are deliberately left in place too,
-# since the matching public key may already be registered on GitHub.
 #
 set -euo pipefail
 
@@ -69,13 +63,6 @@ PYTHON_VERSION="3.12.12"
 # into $SHELL_RC and use $LOGIN_SHELL to pick the right init syntax.
 LOGIN_SHELL="zsh"
 SHELL_RC="$HOME/.zshrc"
-
-# Manifest of what this run actually created/installed, so `--undo` can revert
-# precisely without disturbing anything that pre-existed. Lives under macOS's
-# Application Support directory, where persistent app state belongs. Override
-# with SETUP_STATE_DIR if you need to.
-STATE_DIR="${SETUP_STATE_DIR:-$HOME/Library/Application Support/darwin-positron-dev-setup}"
-MANIFEST="$STATE_DIR/manifest"
 
 # --- helpers ----------------------------------------------------------------
 
@@ -148,13 +135,6 @@ cask_installed() {
   brew list --cask --versions "$1" >/dev/null 2>&1
 }
 
-# record <line>: append an action record to the manifest so --undo can reverse
-# it later. Creates the state dir on first use.
-record() {
-  mkdir -p "$STATE_DIR"
-  printf '%s\n' "$1" >>"$MANIFEST"
-}
-
 # confirm <prompt>: ask a yes/no question, defaulting to Yes so the developer can
 # hit ENTER to proceed through the steps. Reads from the terminal (/dev/tty)
 # rather than stdin, so the prompt still works when the script is piped in via
@@ -213,8 +193,8 @@ clip_copy() {
 
 # add_shell_init <tag> <line>...: append a marker-delimited block of shell-init
 # lines to $SHELL_RC so a tool (fnm, pyenv, ...) loads in future interactive
-# shells. Idempotent by <tag>, and recorded for --undo, which removes the block
-# by its markers. <tag> names the tool so blocks are individually identifiable.
+# shells. Idempotent by <tag>. <tag> names the tool so blocks are individually
+# identifiable (and easy to find and remove by hand later).
 add_shell_init() {
   local tag="$1"; shift
   local rc="$SHELL_RC"
@@ -228,7 +208,6 @@ add_shell_init() {
     printf '%s\n' "$@"
     printf '# <<< darwin-positron-dev-setup: %s <<<\n' "$tag"
   } >>"$rc"
-  record "shellinit $rc"
 }
 
 # --- steps ------------------------------------------------------------------
@@ -239,12 +218,8 @@ add_shell_init() {
 # they're missing — and does so headlessly via `softwareupdate`, rather than the
 # `xcode-select --install` GUI dialog (which opens behind the terminal, unseen).
 # That makes it the effective entry point for the whole toolchain, and it puts
-# git on PATH in time for the oh-my-zsh step that follows.
-#
-# Like the Command Line Tools, Homebrew and its shell wiring are foundational and
-# shared with other tooling, so this step records nothing: `--undo` leaves brew
-# (and the `brew shellenv` line it adds to your shell rc) in place. Individual
-# formulae installed later are recorded and reversed on their own.
+# git on PATH in time for the oh-my-zsh step that follows. Homebrew and its shell
+# wiring are foundational and shared with other tooling, so they're left in place.
 install_homebrew() {
   banner "Homebrew"
 
@@ -311,19 +286,8 @@ install_deps() {
     return 0
   fi
 
-  # Note which formulae aren't installed yet, so --undo removes only those and
-  # leaves anything that was already present alone.
-  local formula new=()
-  for formula in "${FORMULAE[@]}"; do
-    formula_installed "$formula" || new+=("$formula")
-  done
-
   log "installing package dependencies (${#FORMULAE[@]} formulae)..."
   brew install "${FORMULAE[@]}"
-
-  for formula in "${new[@]:-}"; do
-    [ -n "$formula" ] && record "formula $formula"
-  done
   log "package dependencies installed."
 }
 
@@ -333,8 +297,7 @@ install_deps() {
 # skips if ~/.oh-my-zsh already exists. Runs the official installer unattended so
 # it doesn't try to chsh or exec a login zsh (which would hijack this script).
 # The installer creates ~/.zshrc from its template, backing up any existing one
-# to ~/.zshrc.pre-oh-my-zsh. Recorded for --undo, which removes ~/.oh-my-zsh and
-# restores the backup. curl is not installed here (it ships with macOS).
+# to ~/.zshrc.pre-oh-my-zsh. curl is not installed here (it ships with macOS).
 install_oh_my_zsh() {
   banner "oh-my-zsh"
 
@@ -352,7 +315,6 @@ install_oh_my_zsh() {
   # --unattended sets CHSH=no and RUNZSH=no: don't touch the login shell (zsh is
   # already the macOS default) and don't drop into a new zsh at the end.
   sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
-  record "omz"
 
   # The installer replaces ~/.zshrc with its template, sweeping the `brew
   # shellenv` line install_homebrew added into ~/.zshrc.pre-oh-my-zsh. Re-add it
@@ -373,8 +335,7 @@ install_oh_my_zsh() {
 # tool-init blocks (fnm, pyenv) are appended below it but don't touch PROMPT, so
 # it stays the effective prompt. The prompt uses oh-my-zsh helpers ($fg,
 # git_prompt_info), so we only add it when oh-my-zsh is present; otherwise the
-# developer manages their own prompt. Idempotent and undo-aware via
-# add_shell_init.
+# developer manages their own prompt. Idempotent via add_shell_init.
 configure_zsh_prompt() {
   [ -d "$HOME/.oh-my-zsh" ] || return 0
   banner "Configure Zsh Prompt"
@@ -401,17 +362,15 @@ install_node() {
   fi
 
   # fnm itself, into ~/.fnm (both the binary and, via $FNM_DIR, the installed
-  # Node versions, so --undo can remove everything by deleting one directory).
-  # --skip-shell so we control the shell wiring ourselves (via add_shell_init),
-  # consistent with pyenv. curl and unzip, which fnm's installer needs, ship
-  # with macOS, so there's nothing to install first.
+  # Node versions). --skip-shell so we control the shell wiring ourselves (via
+  # add_shell_init), consistent with pyenv. curl and unzip, which fnm's installer
+  # needs, ship with macOS, so there's nothing to install first.
   local fnm_dir="$HOME/.fnm"
   if [ -x "$fnm_dir/fnm" ]; then
     log "fnm already installed ($fnm_dir); skipping."
   else
     log "installing fnm into $fnm_dir ..."
     curl -fsSL https://fnm.vercel.app/install | bash -s -- --install-dir "$fnm_dir" --skip-shell
-    record "fnm-root $fnm_dir"
   fi
 
   # Make fnm usable for the rest of this script.
@@ -436,7 +395,6 @@ install_node() {
   else
     log "installing Node.js $NODE_VERSION with fnm..."
     fnm install "$NODE_VERSION"
-    record "fnm-version $NODE_VERSION"
   fi
   fnm default "$NODE_VERSION"
   log "fnm default Node.js set to $NODE_VERSION."
@@ -457,29 +415,21 @@ install_python() {
 
   # Homebrew formulae that pyenv links against when compiling CPython from source
   # (pyenv's macOS "suggested build environment"). python-build auto-detects
-  # these Homebrew packages and wires in the right build flags. Only the ones not
-  # already present are recorded, so --undo removes just what we added.
+  # these Homebrew packages and wires in the right build flags. brew is
+  # idempotent, so re-installing already-present ones is a harmless no-op.
   local build_deps=(
     openssl@3 readline sqlite xz zlib tcl-tk
   )
-  local formula new=()
-  for formula in "${build_deps[@]}"; do
-    formula_installed "$formula" || new+=("$formula")
-  done
-  if [ "${#new[@]}" -gt 0 ]; then
-    log "installing ${#new[@]} pyenv build dependencies..."
-    brew install "${build_deps[@]}"
-    for formula in "${new[@]}"; do record "formula $formula"; done
-  fi
+  log "installing pyenv build dependencies (${#build_deps[@]} formulae)..."
+  brew install "${build_deps[@]}"
 
-  # pyenv itself, into ~/.pyenv (so --undo can remove it by deleting one dir).
+  # pyenv itself, into ~/.pyenv.
   local pyenv_root="$HOME/.pyenv"
   if [ -d "$pyenv_root/.git" ]; then
     log "pyenv already installed ($pyenv_root); skipping clone."
   else
     log "installing pyenv into $pyenv_root ..."
     git clone --depth 1 https://github.com/pyenv/pyenv.git "$pyenv_root"
-    record "pyenv-root $pyenv_root"
   fi
 
   # Make pyenv usable for the rest of this script.
@@ -493,7 +443,6 @@ install_python() {
   else
     log "building Python $PYTHON_VERSION with pyenv (this can take a few minutes)..."
     pyenv install "$PYTHON_VERSION"
-    record "pyenv-version $PYTHON_VERSION"
   fi
   pyenv global "$PYTHON_VERSION"
   log "pyenv global Python set to $PYTHON_VERSION."
@@ -549,25 +498,22 @@ configure_git_identity() {
   banner "Setup Git Identity"
   log "setting your git identity (used to author your commits)..."
 
-  # Prompt for both, showing any existing value as the default. Only set (and
-  # record for undo) fields that actually change, so we never unset or clobber an
-  # identity the developer already had, and re-running is a no-op.
+  # Prompt for both, showing any existing value as the default. Only set fields
+  # that actually change, so we never clobber an identity the developer already
+  # had, and re-running is a no-op.
   ask_default "Your Git user.name" name "$cur_name"
   if [ "$name" != "$cur_name" ]; then
     git config --global user.name "$name"
-    [ -z "$cur_name" ] && record "git-name"
   fi
   ask_default "Your Git user.email" email "$cur_email"
   if [ "$email" != "$cur_email" ]; then
     git config --global user.email "$email"
-    [ -z "$cur_email" ] && record "git-email"
   fi
   log "git identity set to $name <$email>."
 }
 
 # install_vscode: optionally install the latest stable Visual Studio Code via
-# Homebrew cask. Idempotent — skips if the cask is already installed. Recorded
-# for --undo only when we newly install it.
+# Homebrew cask. Idempotent — skips if the cask is already installed.
 install_vscode() {
   banner "Install Visual Studio Code"
 
@@ -583,13 +529,12 @@ install_vscode() {
 
   log "installing Visual Studio Code (cask) ..."
   brew install --cask visual-studio-code
-  record "cask visual-studio-code"
   log "Visual Studio Code installed."
 }
 
 # positron_parent_dir: prompt for a folder under ~/ (e.g. "Work" or "Code"),
-# create it if missing (recorded for --undo), and echo it. Shared by the clone
-# and fork paths, which put each repo checkout directly inside it.
+# create it if missing, and echo it. Shared by the clone and fork paths, which
+# put each repo checkout directly inside it.
 positron_parent_dir() {
   local folder parent
   ask "Which folder under ~/ should the repos go in? (e.g. Work, Code)" folder
@@ -597,13 +542,12 @@ positron_parent_dir() {
   if [ ! -d "$parent" ]; then
     log "creating $parent ..."
     mkdir -p "$parent"
-    record "mkdir $parent"
   fi
   printf '%s\n' "$parent"
 }
 
 # clone_repo <url> <dest>: clone <url> into <dest> over SSH, unless a checkout is
-# already there. Idempotent and recorded for --undo.
+# already there. Idempotent.
 clone_repo() {
   local url="$1" dest="$2"
   if [ -d "$dest/.git" ]; then
@@ -616,7 +560,6 @@ clone_repo() {
   fi
   log "cloning $url into $dest ..."
   git clone "$url" "$dest"
-  record "clone $dest"
 }
 
 # clone_or_fork_positron: the final interactive step. Positron core developers
@@ -656,8 +599,7 @@ clone_positron() {
 # fork_positron: for community contributors without push access. Points the
 # developer at GitHub to create their own fork in the browser, then clones that
 # fork over SSH (as origin) and adds the canonical repo as an `upstream` remote so
-# they can pull updates. The fork on GitHub is left in place on --undo, like
-# generated SSH keys.
+# they can pull updates.
 fork_positron() {
   banner "Fork Positron"
 
@@ -714,121 +656,6 @@ final_notice() {
     "(or just open a new terminal window.)"
 }
 
-# undo: reverse everything recorded in the manifest, then delete it. Only touches
-# what this script created/installed; leaves pre-existing state untouched. Does
-# not revert Homebrew updates/upgrades, and — like the Command Line Tools and
-# generated SSH keys — leaves Homebrew itself in place.
-undo() {
-  banner "Undo macOS Positron Dev Setup"
-  if [ ! -f "$MANIFEST" ]; then
-    log "no manifest found ($MANIFEST); nothing to undo."
-    return 0
-  fi
-
-  # --undo is a fresh, non-interactive run that hasn't sourced ~/.zshrc, and on
-  # Apple silicon brew lives in /opt/homebrew, off the default PATH — so put it on
-  # PATH for the uninstall steps below. If brew isn't installed, the formula/cask
-  # removals simply no-op.
-  if ! have brew; then
-    if [ -x /opt/homebrew/bin/brew ]; then
-      eval "$(/opt/homebrew/bin/brew shellenv)"
-    elif [ -x /usr/local/bin/brew ]; then
-      eval "$(/usr/local/bin/brew shellenv)"
-    fi
-  fi
-
-  local line dir ver file name formulae=() casks=() dirs=()
-  while IFS= read -r line; do
-    case "$line" in
-      "formula "*) formulae+=("${line#formula }") ;;
-      "cask "*) casks+=("${line#cask }") ;;
-      "mkdir "*) dirs+=("${line#mkdir }") ;;
-      "omz")
-        log "removing oh-my-zsh ..."
-        rm -rf "$HOME/.oh-my-zsh"
-        if [ -f "$HOME/.zshrc.pre-oh-my-zsh" ]; then
-          log "restoring pre-oh-my-zsh ~/.zshrc ..."
-          mv -f "$HOME/.zshrc.pre-oh-my-zsh" "$HOME/.zshrc"
-        fi
-        ;;
-      "git-name")
-        log "unsetting git user.name ..."
-        git config --global --unset user.name || true
-        ;;
-      "git-email")
-        log "unsetting git user.email ..."
-        git config --global --unset user.email || true
-        ;;
-      "pyenv-version "*)
-        ver="${line#pyenv-version }"
-        log "uninstalling pyenv Python $ver ..."
-        PYENV_ROOT="$HOME/.pyenv" PATH="$HOME/.pyenv/bin:$PATH" \
-          pyenv uninstall -f "$ver" 2>/dev/null || true
-        ;;
-      "pyenv-root "*)
-        dir="${line#pyenv-root }"
-        log "removing pyenv ($dir) ..."
-        rm -rf "$dir"
-        ;;
-      "fnm-version "*)
-        ver="${line#fnm-version }"
-        log "uninstalling Node.js $ver ..."
-        FNM_DIR="$HOME/.fnm" PATH="$HOME/.fnm:$PATH" \
-          fnm uninstall "$ver" 2>/dev/null || true
-        ;;
-      "fnm-root "*)
-        dir="${line#fnm-root }"
-        log "removing fnm ($dir) ..."
-        rm -rf "$dir"
-        ;;
-      "shellinit "*)
-        file="${line#shellinit }"
-        log "removing our shell init from $file ..."
-        # BSD sed (macOS) requires an explicit backup suffix after -i; '' means
-        # edit in place with no backup.
-        sed -i '' '/# >>> darwin-positron-dev-setup: /,/# <<< darwin-positron-dev-setup: /d' "$file" 2>/dev/null || true
-        ;;
-      "clone "*)
-        dir="${line#clone }"
-        log "removing cloned repo $dir ..."
-        rm -rf "$dir"
-        ;;
-    esac
-  done <"$MANIFEST"
-
-  # Uninstall the formulae/casks we installed. Per item so one with a remaining
-  # dependent doesn't block the rest, and never under sudo. Homebrew stays; brew
-  # autoremove then drops any now-unused dependencies we pulled in.
-  if [ "${#formulae[@]}" -gt 0 ]; then
-    for name in "${formulae[@]}"; do
-      log "uninstalling formula $name ..."
-      brew uninstall --formula "$name" 2>/dev/null || true
-    done
-  fi
-  if [ "${#casks[@]}" -gt 0 ]; then
-    for name in "${casks[@]}"; do
-      log "uninstalling cask $name ..."
-      brew uninstall --cask "$name" 2>/dev/null || true
-    done
-  fi
-  if [ "${#formulae[@]}" -gt 0 ] || [ "${#casks[@]}" -gt 0 ]; then
-    log "removing now-unused Homebrew dependencies ..."
-    brew autoremove 2>/dev/null || true
-  fi
-
-  # Remove folders we created, last, so any checkouts inside them (removed above)
-  # are already gone. rmdir only deletes empty dirs, so a folder the developer
-  # later put other work in is left untouched.
-  for dir in "${dirs[@]:-}"; do
-    [ -n "$dir" ] || continue
-    rmdir "$dir" 2>/dev/null && log "removed $dir" || true
-  done
-
-  rm -f "$MANIFEST"
-  rmdir "$STATE_DIR" 2>/dev/null || true
-  log "undo complete."
-}
-
 # --- main -------------------------------------------------------------------
 
 main() {
@@ -852,9 +679,4 @@ main() {
   final_notice
 }
 
-case "${1:-}" in
-  ""|--setup) main ;;
-  --undo) undo ;;
-  -h|--help) printf 'usage: %s [--undo]\n' "$0" ;;
-  *) printf 'unknown option: %s\nusage: %s [--undo]\n' "$1" "$0" >&2; exit 2 ;;
-esac
+main "$@"
