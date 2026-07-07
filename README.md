@@ -23,7 +23,7 @@ are idempotent, so re-running is safe.
 ## Undoing the setup
 
 Each run records what it actually installed or created in a per-machine manifest
-(`~/.local/state/darwin-positron-dev-setup/manifest`), and `--undo` reverses exactly
+(`~/Library/Application Support/darwin-positron-dev-setup/manifest`), and `--undo` reverses exactly
 that. Pass it through the same one-liner — note the extra `setup` word, which is a
 placeholder that has to be there (with `bash -c`, the first word after the script
 becomes `$0`, so `--undo` alone would be swallowed and a normal setup would run
@@ -40,10 +40,9 @@ in place, since they may already be in use.
 
 ## What it does
 
-- Installs the Xcode Command Line Tools (git, compilers, and headers) if they
-  aren't already present.
-- Installs [Homebrew](https://brew.sh) if it isn't already present, and adds it to
-  your shell environment.
+- Installs [Homebrew](https://brew.sh) if it isn't already present (which also
+  installs the Xcode Command Line Tools — git, compilers, and headers — if
+  they're missing), and wires it into your shell environment.
 - Optionally updates and upgrades installed Homebrew packages.
 - Installs all package dependencies.
 - Optionally installs [oh-my-zsh](https://ohmyz.sh) on top of Zsh (the default
