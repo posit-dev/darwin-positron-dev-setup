@@ -222,10 +222,48 @@ add_shell_init() {
 
 # --- steps ------------------------------------------------------------------
 
+# install_xcode_clt: ensure the Xcode Command Line Tools are present. They
+# provide git, clang, make, and the system headers that later steps depend on.
+# This must run first: the oh-my-zsh installer clones its repo with git, so git
+# has to exist before install_oh_my_zsh — and oh-my-zsh runs before Homebrew
+# (which would otherwise bootstrap the tools itself). Idempotent: if
+# `xcode-select -p` already resolves, there's nothing to do.
+#
+# `xcode-select --install` opens the standard macOS GUI installer and returns
+# immediately, so we poll until the tools actually appear before moving on. This
+# step is deliberately NOT recorded in the manifest: the Command Line Tools are a
+# foundational system component shared with other tooling, so `--undo` leaves
+# them in place (like Homebrew itself and generated SSH keys).
+install_xcode_clt() {
+  banner "Xcode Command Line Tools"
+
+  if xcode-select -p >/dev/null 2>&1; then
+    log "Xcode Command Line Tools already installed; skipping."
+    return 0
+  fi
+
+  if ! confirm "Install the Xcode Command Line Tools (git, clang, headers)?"; then
+    log "Skipping Xcode Command Line Tools — later steps will likely fail without them."
+    return 0
+  fi
+
+  log "Requesting installation; accept the macOS dialog that appears ..."
+  xcode-select --install >/dev/null 2>&1 || true
+
+  # xcode-select --install returns immediately while the GUI installer runs in
+  # the background, so wait for the tools to actually land before continuing.
+  log "Waiting for the Command Line Tools to finish installing ..."
+  until xcode-select -p >/dev/null 2>&1; do
+    sleep 5
+  done
+
+  log "Xcode Command Line Tools installed."
+}
+
 # install_homebrew: ensure Homebrew is installed and on PATH, both for the rest
-# of this run and for future shells. The official installer also bootstraps the
-# Xcode Command Line Tools (clang, git, headers) if they're missing, so this is
-# the effective entry point for the whole toolchain.
+# of this run and for future shells. install_xcode_clt normally installs the
+# Command Line Tools first, but the official installer also bootstraps them
+# (clang, git, headers) if they're somehow still missing.
 #
 # Like the Command Line Tools, Homebrew and its shell wiring are foundational and
 # shared with other tooling, so this step records nothing: `--undo` leaves brew
@@ -401,8 +439,11 @@ install_node() {
 
 main() {
   banner "macOS Positron Dev Setup"
-  # oh-my-zsh first: its installer replaces ~/.zshrc, so it must run before any
-  # step that writes to it (install_homebrew wires in `brew shellenv`).
+  # Command Line Tools first: they provide git, which the oh-my-zsh installer
+  # needs, plus clang/make/headers that Homebrew and later steps rely on.
+  install_xcode_clt
+  # oh-my-zsh next: its installer replaces ~/.zshrc, so it must run before any
+  # step that writes to it (install_homebrew wires in `brew shellenv`; fnm too).
   install_oh_my_zsh
   install_homebrew
   install_deps

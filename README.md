@@ -40,9 +40,10 @@ in place, since they may already be in use.
 
 ## What it does
 
-- Installs [Homebrew](https://brew.sh) if it isn't already present (which also
-  installs the Xcode Command Line Tools — git, compilers, and headers — if
-  they're missing), and wires it into your shell environment.
+- Installs the Xcode Command Line Tools (git, compilers, and headers) if they
+  aren't already present — this runs first, since later steps need git.
+- Installs [Homebrew](https://brew.sh) if it isn't already present, and wires it
+  into your shell environment.
 - Optionally updates and upgrades installed Homebrew packages.
 - Installs all package dependencies.
 - Optionally installs [oh-my-zsh](https://ohmyz.sh) on top of Zsh (the default
