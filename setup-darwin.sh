@@ -293,10 +293,42 @@ install_deps() {
   log "package dependencies installed."
 }
 
+# install_oh_my_zsh: optionally install the oh-my-zsh framework on top of zsh.
+# macOS already uses zsh as the default login shell, so there's no shell to
+# switch — this just offers the framework as an optional enhancement. Idempotent:
+# skips if ~/.oh-my-zsh already exists. Runs the official installer unattended so
+# it doesn't try to chsh or exec a login zsh (which would hijack this script).
+# The installer creates ~/.zshrc from its template, backing up any existing one
+# to ~/.zshrc.pre-oh-my-zsh. Recorded for --undo, which removes ~/.oh-my-zsh and
+# restores the backup. curl is not installed here (it ships with macOS).
+install_oh_my_zsh() {
+  banner "oh-my-zsh"
+
+  if [ -d "$HOME/.oh-my-zsh" ]; then
+    log "oh-my-zsh already installed ($HOME/.oh-my-zsh); skipping."
+    return 0
+  fi
+
+  if ! confirm "zsh is already the default shell on macOS. Install oh-my-zsh on top of it?"; then
+    log "skipping oh-my-zsh install."
+    return 0
+  fi
+
+  log "installing oh-my-zsh ..."
+  # --unattended sets CHSH=no and RUNZSH=no: don't touch the login shell (zsh is
+  # already the macOS default) and don't drop into a new zsh at the end.
+  sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+  record "omz"
+  log "oh-my-zsh installed."
+}
+
 # --- main -------------------------------------------------------------------
 
 main() {
   banner "macOS Positron Dev Setup"
+  # oh-my-zsh first: its installer replaces ~/.zshrc, so it must run before any
+  # step that writes to it (install_homebrew wires in `brew shellenv`).
+  install_oh_my_zsh
   install_homebrew
   install_deps
 }
