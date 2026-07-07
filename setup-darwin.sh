@@ -200,6 +200,26 @@ ask_default() {
   printf -v "$__var" '%s' "$reply"
 }
 
+# add_shell_init <tag> <line>...: append a marker-delimited block of shell-init
+# lines to $SHELL_RC so a tool (fnm, pyenv, ...) loads in future interactive
+# shells. Idempotent by <tag>, and recorded for --undo, which removes the block
+# by its markers. <tag> names the tool so blocks are individually identifiable.
+add_shell_init() {
+  local tag="$1"; shift
+  local rc="$SHELL_RC"
+  if [ -f "$rc" ] && grep -q "darwin-positron-dev-setup: $tag" "$rc"; then
+    log "$tag shell init already present in $rc; skipping."
+    return 0
+  fi
+  log "adding $tag shell init to $rc ..."
+  {
+    printf '\n# >>> darwin-positron-dev-setup: %s >>>\n' "$tag"
+    printf '%s\n' "$@"
+    printf '# <<< darwin-positron-dev-setup: %s <<<\n' "$tag"
+  } >>"$rc"
+  record "shellinit $rc"
+}
+
 # --- steps ------------------------------------------------------------------
 
 # install_homebrew: ensure Homebrew is installed and on PATH, both for the rest
@@ -322,6 +342,61 @@ install_oh_my_zsh() {
   log "oh-my-zsh installed."
 }
 
+# install_node: install fnm (Fast Node Manager) and the pinned Node.js
+# ($NODE_VERSION), then set it as the default. fnm is the current recommendation
+# for managing Node versions. Idempotent — skips the fnm install and the version
+# install if they're already present. Relies on the LOGIN_SHELL/SHELL_RC globals
+# set at the top of the script.
+install_node() {
+  banner "Install Node.js"
+
+  if ! confirm "Install Node.js $NODE_VERSION via fnm?"; then
+    log "skipping Node.js install."
+    return 0
+  fi
+
+  # fnm itself, into ~/.fnm (both the binary and, via $FNM_DIR, the installed
+  # Node versions, so --undo can remove everything by deleting one directory).
+  # --skip-shell so we control the shell wiring ourselves (via add_shell_init),
+  # consistent with pyenv. curl and unzip, which fnm's installer needs, ship
+  # with macOS, so there's nothing to install first.
+  local fnm_dir="$HOME/.fnm"
+  if [ -x "$fnm_dir/fnm" ]; then
+    log "fnm already installed ($fnm_dir); skipping."
+  else
+    log "installing fnm into $fnm_dir ..."
+    curl -fsSL https://fnm.vercel.app/install | bash -s -- --install-dir "$fnm_dir" --skip-shell
+    record "fnm-root $fnm_dir"
+  fi
+
+  # Make fnm usable for the rest of this script.
+  export PATH="$fnm_dir:$PATH"
+  export FNM_DIR="$fnm_dir"
+
+  # Wire fnm into future interactive shells now, before the (network-dependent)
+  # version install below. Under `set -e` a failed `fnm install` would abort the
+  # script, and if the wiring came afterward we'd leave the binary on disk but
+  # off PATH — fnm unusable in new shells. The `[ -d "$FNM_DIR" ]` guard mirrors
+  # fnm's own installer so the block is a no-op if the dir is ever removed.
+  add_shell_init fnm \
+    'export FNM_DIR="$HOME/.fnm"' \
+    'if [ -d "$FNM_DIR" ]; then' \
+    '  export PATH="$FNM_DIR:$PATH"' \
+    "  eval \"\$(fnm env --use-on-cd --shell $LOGIN_SHELL)\"" \
+    'fi'
+
+  # Install the pinned Node version (idempotent).
+  if fnm list 2>/dev/null | grep -q "v$NODE_VERSION"; then
+    log "Node.js $NODE_VERSION already installed via fnm; skipping."
+  else
+    log "installing Node.js $NODE_VERSION with fnm..."
+    fnm install "$NODE_VERSION"
+    record "fnm-version $NODE_VERSION"
+  fi
+  fnm default "$NODE_VERSION"
+  log "fnm default Node.js set to $NODE_VERSION."
+}
+
 # --- main -------------------------------------------------------------------
 
 main() {
@@ -331,6 +406,7 @@ main() {
   install_oh_my_zsh
   install_homebrew
   install_deps
+  install_node
 }
 
 main "$@"
