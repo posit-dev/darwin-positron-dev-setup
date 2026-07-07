@@ -222,48 +222,13 @@ add_shell_init() {
 
 # --- steps ------------------------------------------------------------------
 
-# install_xcode_clt: ensure the Xcode Command Line Tools are present. They
-# provide git, clang, make, and the system headers that later steps depend on.
-# This must run first: the oh-my-zsh installer clones its repo with git, so git
-# has to exist before install_oh_my_zsh — and oh-my-zsh runs before Homebrew
-# (which would otherwise bootstrap the tools itself). Idempotent: if
-# `xcode-select -p` already resolves, there's nothing to do.
-#
-# `xcode-select --install` opens the standard macOS GUI installer and returns
-# immediately, so we poll until the tools actually appear before moving on. This
-# step is deliberately NOT recorded in the manifest: the Command Line Tools are a
-# foundational system component shared with other tooling, so `--undo` leaves
-# them in place (like Homebrew itself and generated SSH keys).
-install_xcode_clt() {
-  banner "Xcode Command Line Tools"
-
-  if xcode-select -p >/dev/null 2>&1; then
-    log "Xcode Command Line Tools already installed; skipping."
-    return 0
-  fi
-
-  if ! confirm "Install the Xcode Command Line Tools (git, clang, headers)?"; then
-    log "Skipping Xcode Command Line Tools — later steps will likely fail without them."
-    return 0
-  fi
-
-  log "Requesting installation; accept the macOS dialog that appears ..."
-  xcode-select --install >/dev/null 2>&1 || true
-
-  # xcode-select --install returns immediately while the GUI installer runs in
-  # the background, so wait for the tools to actually land before continuing.
-  log "Waiting for the Command Line Tools to finish installing ..."
-  until xcode-select -p >/dev/null 2>&1; do
-    sleep 5
-  done
-
-  log "Xcode Command Line Tools installed."
-}
-
 # install_homebrew: ensure Homebrew is installed and on PATH, both for the rest
-# of this run and for future shells. install_xcode_clt normally installs the
-# Command Line Tools first, but the official installer also bootstraps them
-# (clang, git, headers) if they're somehow still missing.
+# of this run and for future shells. This runs first because the official
+# installer also installs the Xcode Command Line Tools (git, clang, headers) if
+# they're missing — and does so headlessly via `softwareupdate`, rather than the
+# `xcode-select --install` GUI dialog (which opens behind the terminal, unseen).
+# That makes it the effective entry point for the whole toolchain, and it puts
+# git on PATH in time for the oh-my-zsh step that follows.
 #
 # Like the Command Line Tools, Homebrew and its shell wiring are foundational and
 # shared with other tooling, so this step records nothing: `--undo` leaves brew
@@ -377,6 +342,17 @@ install_oh_my_zsh() {
   # already the macOS default) and don't drop into a new zsh at the end.
   sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
   record "omz"
+
+  # The installer replaces ~/.zshrc with its template, sweeping the `brew
+  # shellenv` line install_homebrew added into ~/.zshrc.pre-oh-my-zsh. Re-add it
+  # to the new ~/.zshrc so future shells still find Homebrew (and thus git, node,
+  # ...) on PATH. Guarded so it's a no-op if brew isn't installed or the line
+  # somehow survived.
+  if have brew && ! grep -qF "brew shellenv" "$SHELL_RC" 2>/dev/null; then
+    printf '\neval "$(%s shellenv)"\n' "$(command -v brew)" >>"$SHELL_RC"
+    log "re-added brew shellenv to $SHELL_RC (the oh-my-zsh installer replaced it)."
+  fi
+
   log "oh-my-zsh installed."
 }
 
@@ -439,13 +415,13 @@ install_node() {
 
 main() {
   banner "macOS Positron Dev Setup"
-  # Command Line Tools first: they provide git, which the oh-my-zsh installer
-  # needs, plus clang/make/headers that Homebrew and later steps rely on.
-  install_xcode_clt
-  # oh-my-zsh next: its installer replaces ~/.zshrc, so it must run before any
-  # step that writes to it (install_homebrew wires in `brew shellenv`; fnm too).
-  install_oh_my_zsh
+  # Homebrew first: its installer headlessly installs the Command Line Tools
+  # (git, clang, headers) if missing, putting git on PATH for oh-my-zsh next.
   install_homebrew
+  # oh-my-zsh replaces ~/.zshrc, so install_homebrew's `brew shellenv` line is
+  # re-added inside install_oh_my_zsh afterward. fnm (install_node) wires itself
+  # in later, so its block lands after the oh-my-zsh template and survives.
+  install_oh_my_zsh
   install_deps
   install_node
 }
