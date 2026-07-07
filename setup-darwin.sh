@@ -411,6 +411,69 @@ install_node() {
   log "fnm default Node.js set to $NODE_VERSION."
 }
 
+# install_python: install pyenv and build the pinned CPython ($PYTHON_VERSION),
+# then set it as the global version. Positron needs Python both to build against
+# and to run against, and pyenv lets the developer manage/switch versions
+# cleanly. Idempotent — skips the pyenv clone and the version build if they're
+# already present.
+install_python() {
+  banner "Install Python"
+
+  if ! confirm "Install Python $PYTHON_VERSION via pyenv?"; then
+    log "skipping Python install."
+    return 0
+  fi
+
+  # Homebrew formulae that pyenv links against when compiling CPython from source
+  # (pyenv's macOS "suggested build environment"). python-build auto-detects
+  # these Homebrew packages and wires in the right build flags. Only the ones not
+  # already present are recorded, so --undo removes just what we added.
+  local build_deps=(
+    openssl@3 readline sqlite xz zlib tcl-tk
+  )
+  local formula new=()
+  for formula in "${build_deps[@]}"; do
+    formula_installed "$formula" || new+=("$formula")
+  done
+  if [ "${#new[@]}" -gt 0 ]; then
+    log "installing ${#new[@]} pyenv build dependencies..."
+    brew install "${build_deps[@]}"
+    for formula in "${new[@]}"; do record "formula $formula"; done
+  fi
+
+  # pyenv itself, into ~/.pyenv (so --undo can remove it by deleting one dir).
+  local pyenv_root="$HOME/.pyenv"
+  if [ -d "$pyenv_root/.git" ]; then
+    log "pyenv already installed ($pyenv_root); skipping clone."
+  else
+    log "installing pyenv into $pyenv_root ..."
+    git clone --depth 1 https://github.com/pyenv/pyenv.git "$pyenv_root"
+    record "pyenv-root $pyenv_root"
+  fi
+
+  # Make pyenv usable for the rest of this script.
+  export PYENV_ROOT="$pyenv_root"
+  export PATH="$PYENV_ROOT/bin:$PATH"
+
+  # Build the pinned version. pyenv would skip an existing build itself, but the
+  # explicit check keeps the log clean and avoids a needless rebuild.
+  if pyenv versions --bare 2>/dev/null | grep -qx "$PYTHON_VERSION"; then
+    log "Python $PYTHON_VERSION already installed via pyenv; skipping build."
+  else
+    log "building Python $PYTHON_VERSION with pyenv (this can take a few minutes)..."
+    pyenv install "$PYTHON_VERSION"
+    record "pyenv-version $PYTHON_VERSION"
+  fi
+  pyenv global "$PYTHON_VERSION"
+  log "pyenv global Python set to $PYTHON_VERSION."
+
+  # Wire pyenv into future interactive shells.
+  add_shell_init pyenv \
+    'export PYENV_ROOT="$HOME/.pyenv"' \
+    '[ -d "$PYENV_ROOT/bin" ] && export PATH="$PYENV_ROOT/bin:$PATH"' \
+    "eval \"\$(pyenv init - $LOGIN_SHELL)\""
+}
+
 # --- main -------------------------------------------------------------------
 
 main() {
@@ -424,6 +487,7 @@ main() {
   install_oh_my_zsh
   install_deps
   install_node
+  install_python
 }
 
 main "$@"
