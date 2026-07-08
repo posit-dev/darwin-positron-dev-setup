@@ -219,18 +219,19 @@ add_shell_init() {
 # That makes it the effective entry point for the whole toolchain, and it puts
 # git on PATH in time for the oh-my-zsh step that follows. Homebrew and its shell
 # wiring are foundational and shared with other tooling, so they're left in place.
+# If Homebrew is already installed, it also offers to update and upgrade its
+# packages, so re-running can bring an older machine up to date.
 install_homebrew() {
   banner "Homebrew"
 
+  # Locate an existing brew: on PATH, or in the standard prefix for either
+  # architecture. Apple silicon's /opt/homebrew isn't on the default PATH, and a
+  # fresh non-interactive run hasn't sourced the shell rc that would add it, so we
+  # probe the known locations directly. `fresh` tracks whether we install it now.
+  local brew_bin="" fresh=0
   if have brew; then
-    log "Homebrew already installed ($(brew --prefix)); skipping."
-    return 0
-  fi
-
-  # A prior install may be present but not yet on PATH — common on Apple silicon,
-  # where brew lives in /opt/homebrew and isn't on the default PATH.
-  local brew_bin=""
-  if [ -x /opt/homebrew/bin/brew ]; then
+    brew_bin="$(command -v brew)"
+  elif [ -x /opt/homebrew/bin/brew ]; then
     brew_bin=/opt/homebrew/bin/brew
   elif [ -x /usr/local/bin/brew ]; then
     brew_bin=/usr/local/bin/brew
@@ -246,6 +247,7 @@ install_homebrew() {
     # work even when this script itself was piped in via `curl ... | bash`.
     log "Running the official Homebrew installer; follow its prompts ..."
     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" </dev/tty
+    fresh=1
 
     if [ -x /opt/homebrew/bin/brew ]; then
       brew_bin=/opt/homebrew/bin/brew
@@ -267,6 +269,22 @@ install_homebrew() {
   else
     printf '\neval "$(%s shellenv)"\n' "$brew_bin" >>"$SHELL_RC"
     log "Added brew shellenv to $SHELL_RC."
+  fi
+
+  # If Homebrew was already there (not freshly installed by us), offer to update
+  # it and upgrade its packages — the main way a re-run brings an older machine up
+  # to date. Guarded so a flaky upgrade of one formula doesn't abort the setup.
+  if [ "$fresh" -eq 0 ]; then
+    if confirm "Homebrew is already installed. Update it and upgrade its packages now?"; then
+      log "updating Homebrew and upgrading packages (this can take a while) ..."
+      if brew update && brew upgrade; then
+        log "Homebrew packages updated."
+      else
+        log "WARNING: brew update/upgrade reported an error; continuing."
+      fi
+    else
+      log "skipping brew update/upgrade."
+    fi
   fi
 
   log "Homebrew ready ($("$brew_bin" --prefix))."

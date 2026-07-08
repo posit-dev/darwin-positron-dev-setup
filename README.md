@@ -26,6 +26,7 @@ are idempotent, so re-running is safe.
   into your shell environment. This runs first because the Homebrew installer
   also installs the Xcode Command Line Tools (git, compilers, and headers) when
   they're missing — headlessly, without the `xcode-select --install` GUI dialog.
+  If Homebrew is already installed, offers to update it and upgrade its packages.
 - Optionally installs [oh-my-zsh](https://ohmyz.sh) on top of Zsh (the default
   shell on macOS).
 - If oh-my-zsh is installed, optionally sets a custom shell prompt.
