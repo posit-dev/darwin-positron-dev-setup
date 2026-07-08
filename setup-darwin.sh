@@ -41,14 +41,13 @@ FORMULAE=(
   giflib
 )
 
-# Homebrew casks (GUI apps) installed as dependencies. Visual Studio Code is
-# handled by its own optional step, so it isn't listed here. NOTE: on the stock
-# macOS bash 3.2, expanding an empty array with "${CASKS[@]}" under `set -u`
-# aborts with "unbound variable", so any loop over this must be guarded with
-# `[ "${#CASKS[@]}" -gt 0 ]` first.
+# Homebrew casks (GUI apps). install_casks offers each with its own Y/n prompt.
+# Visual Studio Code is handled by its own optional step, so it isn't listed
+# here. NOTE: on the stock macOS bash 3.2, expanding an empty array with
+# "${CASKS[@]}" under `set -u` aborts with "unbound variable", so install_casks
+# guards the loop with `[ "${#CASKS[@]}" -gt 0 ]` first.
 CASKS=(
   google-chrome
-  docker-desktop
 )
 
 # Node.js version installed via fnm (see install_node). Pinned here so it's easy
@@ -512,6 +511,32 @@ configure_git_identity() {
   log "git identity set to $name <$email>."
 }
 
+# install_casks: offer each GUI app in CASKS with its own Y/n prompt, installing
+# the accepted ones via Homebrew cask. Idempotent — already-installed casks are
+# skipped without prompting. Assumes install_homebrew has put brew on PATH; brew
+# never runs under sudo.
+install_casks() {
+  banner "Install Apps"
+
+  # On stock macOS bash 3.2, expanding an empty array with "${CASKS[@]}" under
+  # `set -u` aborts, so bail out when there's nothing to offer.
+  [ "${#CASKS[@]}" -gt 0 ] || return 0
+
+  local cask
+  for cask in "${CASKS[@]}"; do
+    if cask_installed "$cask"; then
+      log "$cask already installed; skipping."
+      continue
+    fi
+    if confirm "Install $cask?"; then
+      log "installing $cask ..."
+      brew install --cask "$cask"
+    else
+      log "skipping $cask."
+    fi
+  done
+}
+
 # install_vscode: optionally install the latest stable Visual Studio Code via
 # Homebrew cask. Idempotent — skips if the cask is already installed.
 install_vscode() {
@@ -674,6 +699,7 @@ main() {
   # Identity before the SSH key, so the key is labelled with the git email.
   configure_git_identity
   configure_ssh_key
+  install_casks
   install_vscode
   clone_or_fork_positron
   final_notice

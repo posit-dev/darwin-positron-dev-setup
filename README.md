@@ -26,17 +26,20 @@ are idempotent, so re-running is safe.
   into your shell environment. This runs first because the Homebrew installer
   also installs the Xcode Command Line Tools (git, compilers, and headers) when
   they're missing — headlessly, without the `xcode-select --install` GUI dialog.
-- Installs all package dependencies.
 - Optionally installs [oh-my-zsh](https://ohmyz.sh) on top of Zsh (the default
   shell on macOS).
+- If oh-my-zsh is installed, optionally sets a custom shell prompt.
+- Installs the Homebrew formulae Positron needs to build.
 - Installs Node.js via [fnm](https://github.com/Schniz/fnm) and sets it as the
   default.
 - Installs Python via [pyenv](https://github.com/pyenv/pyenv) and sets it as the
   global version.
-- Generates an ed25519 SSH key (if you don't already have one), shows it, copies
-  it to your clipboard with `pbcopy`, and points you at GitHub to register it.
 - Configures your git identity, prompting for your name and email (pre-filling
   anything that's already set).
+- Generates an ed25519 SSH key (if you don't already have one), shows it, copies
+  it to your clipboard with `pbcopy`, and points you at GitHub to register it.
+- Offers GUI apps via Homebrew cask, one Y/n prompt each (currently Google Chrome).
+- Optionally installs Visual Studio Code.
 - Sets up Positron under a folder you choose under `~/`, asking whether you're a
   Positron core developer:
   - **Core developers** get a Y/n prompt to clone each of the core repos
@@ -49,5 +52,5 @@ are idempotent, so re-running is safe.
     to get started.
 
   Existing checkouts are left alone.
-- Optionally installs Visual Studio Code.
-- If you're using oh-my-zsh, sets a custom shell prompt.
+- Finishes by reminding you to open a new terminal (or run `source ~/.zshrc`) so
+  the new PATH and shell changes take effect.
