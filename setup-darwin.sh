@@ -26,7 +26,7 @@ CORE_REPOS=(
 
 # Homebrew formulae (CLI tools/libraries) installed as build dependencies. GUI
 # apps go through --cask instead. Compilers and git come from the Xcode Command
-# Line Tools, and Python comes via pyenv, so none of those appear here. Maintain
+# Line Tools, and Python comes via uv, so none of those appear here. Maintain
 # this list as Positron's build requirements change — one formula per line for
 # easy diffs.
 FORMULAE=(
@@ -54,7 +54,7 @@ CASKS=(
 # to bump in one place as Positron's supported Node moves.
 NODE_VERSION="22.22.1"
 
-# Python version installed via pyenv (see install_python). Pinned here so it's
+# Python version installed via uv (see install_python). Pinned here so it's
 # easy to bump in one place as Positron's supported Python moves.
 PYTHON_VERSION="3.12.12"
 
@@ -191,7 +191,7 @@ clip_copy() {
 }
 
 # add_shell_init <tag> <line>...: append a marker-delimited block of shell-init
-# lines to $SHELL_RC so a tool (fnm, pyenv, ...) loads in future interactive
+# lines to $SHELL_RC so a tool (fnm, uv, ...) loads in future interactive
 # shells. Idempotent by <tag>. <tag> names the tool so blocks are individually
 # identifiable (and easy to find and remove by hand later).
 add_shell_init() {
@@ -349,7 +349,7 @@ install_oh_my_zsh() {
 # configure_zsh_prompt: append a custom PROMPT as a shell-init block of ~/.zshrc.
 # Runs right after install_oh_my_zsh so the block lands after oh-my-zsh's own
 # config (which sets the theme's prompt), letting our PROMPT win. The later
-# tool-init blocks (fnm, pyenv) are appended below it but don't touch PROMPT, so
+# tool-init blocks (fnm, uv) are appended below it but don't touch PROMPT, so
 # it stays the effective prompt. The prompt uses oh-my-zsh helpers ($fg,
 # git_prompt_info), so we only add it when oh-my-zsh is present; otherwise the
 # developer manages their own prompt. Idempotent via add_shell_init.
@@ -380,7 +380,7 @@ install_node() {
 
   # fnm itself, into ~/.fnm (both the binary and, via $FNM_DIR, the installed
   # Node versions). --skip-shell so we control the shell wiring ourselves (via
-  # add_shell_init), consistent with pyenv. curl and unzip, which fnm's installer
+  # add_shell_init), consistent with uv. curl and unzip, which fnm's installer
   # needs, ship with macOS, so there's nothing to install first.
   local fnm_dir="$HOME/.fnm"
   if [ -x "$fnm_dir/fnm" ]; then
@@ -417,58 +417,46 @@ install_node() {
   log "fnm default Node.js set to $NODE_VERSION."
 }
 
-# install_python: install pyenv and build the pinned CPython ($PYTHON_VERSION),
-# then set it as the global version. Positron needs Python both to build against
-# and to run against, and pyenv lets the developer manage/switch versions
-# cleanly. Idempotent — skips the pyenv clone and the version build if they're
-# already present.
+# install_python: install uv (Astral's Python manager) and the pinned CPython
+# ($PYTHON_VERSION), then install it as the default `python`/`python3` on PATH.
+# Positron needs Python both to build against and to run against, and uv manages
+# and switches versions using prebuilt binaries — no compiler or system libraries
+# required. Idempotent — skips the uv install if it's already present, and uv
+# itself skips an already-installed Python version.
 install_python() {
   banner "Install Python"
 
-  if ! confirm "Install Python $PYTHON_VERSION via pyenv?"; then
+  if ! confirm "Install Python $PYTHON_VERSION via uv?"; then
     log "skipping Python install."
     return 0
   fi
 
-  # Homebrew formulae that pyenv links against when compiling CPython from source
-  # (pyenv's macOS "suggested build environment"). python-build auto-detects
-  # these Homebrew packages and wires in the right build flags. brew is
-  # idempotent, so re-installing already-present ones is a harmless no-op.
-  local build_deps=(
-    openssl@3 readline sqlite xz zlib tcl-tk
-  )
-  log "installing pyenv build dependencies (${#build_deps[@]} formulae)..."
-  brew install "${build_deps[@]}"
-
-  # pyenv itself, into ~/.pyenv.
-  local pyenv_root="$HOME/.pyenv"
-  if [ -d "$pyenv_root/.git" ]; then
-    log "pyenv already installed ($pyenv_root); skipping clone."
+  # uv itself, via Homebrew: it's a self-contained binary, brew is idempotent, and
+  # the earlier brew upgrade step keeps it current on re-runs. Assumes
+  # install_homebrew has already put brew on PATH.
+  if have uv; then
+    log "uv already installed ($(command -v uv)); skipping install."
   else
-    log "installing pyenv into $pyenv_root ..."
-    git clone --depth 1 https://github.com/pyenv/pyenv.git "$pyenv_root"
+    log "installing uv via Homebrew ..."
+    brew install uv
   fi
 
-  # Make pyenv usable for the rest of this script.
-  export PYENV_ROOT="$pyenv_root"
-  export PATH="$PYENV_ROOT/bin:$PATH"
+  # uv installs the unversioned `python`/`python3` executables into ~/.local/bin,
+  # which isn't on the macOS default PATH. Add it for the rest of this run ...
+  export PATH="$HOME/.local/bin:$PATH"
 
-  # Build the pinned version. pyenv would skip an existing build itself, but the
-  # explicit check keeps the log clean and avoids a needless rebuild.
-  if pyenv versions --bare 2>/dev/null | grep -qx "$PYTHON_VERSION"; then
-    log "Python $PYTHON_VERSION already installed via pyenv; skipping build."
-  else
-    log "building Python $PYTHON_VERSION with pyenv (this can take a few minutes)..."
-    pyenv install "$PYTHON_VERSION"
-  fi
-  pyenv global "$PYTHON_VERSION"
-  log "pyenv global Python set to $PYTHON_VERSION."
+  # ... and for future interactive shells, in a marker-delimited block (idempotent
+  # and easy to remove by hand later) — the same thing uv's own installer or
+  # `uv tool update-shell` would add.
+  add_shell_init uv \
+    '[ -d "$HOME/.local/bin" ] && export PATH="$HOME/.local/bin:$PATH"'
 
-  # Wire pyenv into future interactive shells.
-  add_shell_init pyenv \
-    'export PYENV_ROOT="$HOME/.pyenv"' \
-    '[ -d "$PYENV_ROOT/bin" ] && export PATH="$PYENV_ROOT/bin:$PATH"' \
-    "eval \"\$(pyenv init - $LOGIN_SHELL)\""
+  # Install the pinned CPython (prebuilt python-build-standalone). uv is
+  # idempotent — an already-installed version is a fast no-op — and --default also
+  # installs the unversioned `python`/`python3` executables, not just python3.X.
+  log "installing Python $PYTHON_VERSION with uv ..."
+  uv python install --default "$PYTHON_VERSION"
+  log "default Python set to $PYTHON_VERSION."
 }
 
 # configure_ssh_key: ensure an ed25519 SSH key pair exists. Idempotent — if
@@ -686,7 +674,7 @@ fork_positron() {
 }
 
 # final_notice: the last thing main() does — a prominent boxed reminder that the
-# shell-init/PATH changes (Homebrew, fnm, pyenv) apply to new shells. macOS
+# shell-init/PATH changes (Homebrew, fnm, uv) apply to new shells. macOS
 # already uses zsh as the login shell (no chsh), so there's no need to log out or
 # reboot: sourcing ~/.zshrc — or opening a new terminal — is enough.
 final_notice() {

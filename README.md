@@ -33,8 +33,8 @@ are idempotent, so re-running is safe.
 - Installs the Homebrew formulae Positron needs to build.
 - Installs Node.js via [fnm](https://github.com/Schniz/fnm) and sets it as the
   default.
-- Installs Python via [pyenv](https://github.com/pyenv/pyenv) and sets it as the
-  global version.
+- Installs Python via [uv](https://docs.astral.sh/uv/) and makes it your default
+  `python`/`python3`.
 - Configures your git identity, prompting for your name and email (pre-filling
   anything that's already set).
 - Generates an ed25519 SSH key (if you don't already have one), shows it, copies
